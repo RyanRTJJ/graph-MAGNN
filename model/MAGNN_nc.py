@@ -68,6 +68,14 @@ class MAGNN_nc_layer(nn.Module):
         # ctr_ntype-specific layers
         h = torch.zeros(type_mask.shape[0], self.in_dim * self.num_heads, device=features.device)
         for i, (g_list, edge_metapath_indices_list, ctr_ntype_layer) in enumerate(zip(g_lists, edge_metapath_indices_lists, self.ctr_ntype_layers)):
+            # print("\nh:")
+            # print(h.shape)
+            print("\n\nMAGNN_nc: ctr_ntype_layer(...).shape:")
+            print(ctr_ntype_layer((g_list, features, type_mask, edge_metapath_indices_list)).shape)
+            print("MAGNN_nc: edge_metapath_indices_list:")
+            print(edge_metapath_indices_list)
+            print("g_list:")
+            print(g_list)
             h[np.where(type_mask == i)[0]] = ctr_ntype_layer((g_list, features, type_mask, edge_metapath_indices_list))
 
         if fc_switch:
@@ -117,6 +125,13 @@ class MAGNN_nc(nn.Module):
 
     def forward(self, inputs, target_node_indices):
         g_lists, features_list, type_mask, edge_metapath_indices_lists = inputs
+        print("MAGNN_nc.forward(): g_lists")
+        print(g_lists)
+
+        # print("\nfeatures_list[0]:")
+        # print(features_list[0])
+        # print(features_list[0].shape)
+        
 
         # ntype-specific transformation
         transformed_features = torch.zeros(type_mask.shape[0], self.hidden_dim, device=features_list[0].device)
@@ -128,9 +143,14 @@ class MAGNN_nc(nn.Module):
         # hidden layers
         for l in range(self.num_layers - 1):
             h, _ = self.layers[l]((g_lists, h, type_mask, edge_metapath_indices_lists))
+            print("MAGNN_nc.py: edge_metapath_indices_lists: ")
+            print(edge_metapath_indices_lists)
+            print(type(edge_metapath_indices_lists))
             h = F.elu(h)
         # output projection layer
         logits, h = self.layers[-1]((g_lists, h, type_mask, edge_metapath_indices_lists))
-
+        print("\nMAGNN_nc.py: logits:")
+        print(logits)
+        print(logits.shape)
         # return only the target nodes' logits and embeddings
         return logits[target_node_indices], h[target_node_indices]

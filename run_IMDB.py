@@ -25,6 +25,9 @@ def run_model_IMDB(feats_type, num_layers, hidden_dim, num_heads, attn_vec_dim, 
     nx_G_lists, edge_metapath_indices_lists, features_list, adjM, type_mask, labels, train_val_test_idx = load_IMDB_data()
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     features_list = [torch.FloatTensor(features.todense()).to(device) for features in features_list]
+    print("features_list:")
+    print(features_list)
+    print(str(len(features_list)))
     if feats_type == 0:
         in_dims = [features.shape[1] for features in features_list]
     elif feats_type == 1:
@@ -48,9 +51,20 @@ def run_model_IMDB(feats_type, num_layers, hidden_dim, num_heads, attn_vec_dim, 
             indices = torch.LongTensor(indices)
             values = torch.FloatTensor(np.ones(dim))
             features_list[i] = torch.sparse.FloatTensor(indices, values, torch.Size([dim, dim])).to(device)
+
+    # what is this?
     edge_metapath_indices_lists = [[torch.LongTensor(indices).to(device) for indices in indices_list] for indices_list in
                                    edge_metapath_indices_lists]
+    print("edge_metapath_indices_lists")
+    print(edge_metapath_indices_lists)
+    print("\n")
+    print("Pre device-conversion labels:")
+    print(labels)
+    print("labels.shape")
+    print(labels.shape)
     labels = torch.LongTensor(labels).to(device)
+    print("Post device-conversion labels:")
+    print(labels)
     g_lists = []
     for nx_G_list in nx_G_lists:
         g_lists.append([])
@@ -69,6 +83,7 @@ def run_model_IMDB(feats_type, num_layers, hidden_dim, num_heads, attn_vec_dim, 
     nmi_std_list = []
     ari_mean_list = []
     ari_std_list = []
+    print("\n\nnum in_dims: " + str(in_dims) + "\n\n")
     for _ in range(repeat):
         net = MAGNN_nc(num_layers, [2, 2, 2], 4, etypes_lists, in_dims, hidden_dim, out_dim, num_heads, attn_vec_dim,
                        rnn_type, dropout_rate)
@@ -87,6 +102,11 @@ def run_model_IMDB(feats_type, num_layers, hidden_dim, num_heads, attn_vec_dim, 
 
             # training forward
             net.train()
+            print("\nrun_IMDB:")
+            print("g_lists:")
+            print(g_lists)
+            print("edge_metapath_indices_lists:")
+            print(edge_metapath_indices_lists)
             logits, embeddings = net((g_lists, features_list, type_mask, edge_metapath_indices_lists), target_node_indices)
             logp = F.log_softmax(logits, 1)
             train_loss = F.nll_loss(logp[train_idx], labels[train_idx])

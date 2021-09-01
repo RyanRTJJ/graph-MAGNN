@@ -1,10 +1,13 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import dgl.function as fn
 from dgl.nn.pytorch import edge_softmax
 
-
+"""
+one instance of this class deals with one metapath TYPE, not even one target node.
+"""
 class MAGNN_metapath_specific(nn.Module):
     def __init__(self,
                  etypes,
@@ -72,20 +75,91 @@ class MAGNN_metapath_specific(nn.Module):
         ft = edges.data['eft'] * edges.data['a_drop']
         return {'ft': ft}
 
+    """
+    Just a helper function called in forward() to extract all the relevant node idxs from metapaths
+    @param edge_metapath_indices: something like tensor([[2, 0, 6], [3, 0, 6]])
+    """
+    def get_sorted_relevant_nidxs(self, edge_metapath_indices):
+        _relevant_node_idx_dict = {}
+        _relevant_node_idx_list = []
+        _emis_list = edge_metapath_indices.tolist()
+        for _emis in _emis_list:
+            _relevant_node_idx_dict[_emis[0]] = _relevant_node_idx_dict.get(_emis[0], 1)
+            _relevant_node_idx_dict[_emis[-1]] = _relevant_node_idx_dict.get(_emis[-1], 1)
+        for _n in _relevant_node_idx_dict.keys():
+            _relevant_node_idx_list.append(_n)
+        _relevant_node_idx_list.sort()
+        return _relevant_node_idx_list
+
+    """
+    Just a helper function called in forward() to extract all target node idxs
+    """
+    def get_target_node_idxs(self, edge_metapath_indices):
+        """
+        _emis_list = edge_metapath_indices.tolist()
+        if len(edge_metapath_indices) == 0:
+            print("Not supposed to happen. base_MAGNN.py > get_target_node_idxs()")
+        sample_target_node_idx = _emis_list[0][-1]
+        target_node_type = type_mask[sample_target_node_idx]
+        relevant_node_idxs = []
+        for i in range(len(type_mask)):
+            if type_mask[i] == target_node_type:
+                relevant_node_idxs.append(i)
+        return relevant_node_idxs
+        """
+        
+        _emis_list = edge_metapath_indices.tolist()
+        _relevant_node_idx_dict = {}
+        _relevant_node_idx_list = []
+        for _emis in _emis_list:
+            _relevant_node_idx_dict[_emis[-1]] = _relevant_node_idx_dict.get(_emis[-1], 1)
+        for _n in _relevant_node_idx_dict.keys():
+            _relevant_node_idx_list.append(_n)
+        _relevant_node_idx_list.sort() #not really needed
+        return _relevant_node_idx_list
+    
     def forward(self, inputs):
         # features: num_all_nodes x out_dim
         if self.use_minibatch:
             g, features, type_mask, edge_metapath_indices, target_idx = inputs
         else:
-            g, features, type_mask, edge_metapath_indices = inputs
+            g, features, type_mask, edge_metapath_indices, target_n_type = inputs
 
+        
+        nodes_of_current_target_type_idxs = np.where(type_mask == target_n_type)[0].tolist()
+        ret = F.embedding(torch.tensor(nodes_of_current_target_type_idxs, dtype=torch.int32, device='cuda:0'), features)
+        ret = torch.cat([ret] * self.num_heads, dim=1)
+        ret = ret.unsqueeze(dim=0)
+        ret = ret.permute(1, 0, 2).view(-1, self.num_heads, self.out_dim)
+
+        if g == None: # means that edge_metapath_indices also = []
+            # print("target_n_type: {}, None graph found. Returning...".format(target_n_type))
+            return ret
+        
+        # For later: extract local idx of target node.
+        # e.g. if edge_metapath_indices = [[2,0,6],[3,0,6]],
+        # in this nxgraph it would correspond to [[1 --> 2],[3 --> 6], (intermediate nodes not saved)
+        _relevant_node_idx_list = self.get_sorted_relevant_nidxs(edge_metapath_indices)
+        _target_node_idxs = self.get_target_node_idxs(edge_metapath_indices)
+        fullg_nidx_to_partialg_nidx_mapping = {}
+        for _i, _n in enumerate(_relevant_node_idx_list):
+            fullg_nidx_to_partialg_nidx_mapping[_n] = _i
+        target_node_idxs_local = [fullg_nidx_to_partialg_nidx_mapping[tnode] for \
+                                  tnode in _target_node_idxs]
+            
         # Embedding layer
         # use torch.nn.functional.embedding or torch.embedding here
         # do not use torch.nn.embedding
         # edata: E x Seq x out_dim
         edata = F.embedding(edge_metapath_indices, features)
 
+        # if (no_such_metapath_instances):
+        #     edata = torch.empty((0, 3, 64), dtype=torch.float64, device='cuda:0')
+        
         # apply rnn to metapath-based feature sequence
+        # if no_such_metapath_instances:
+        #     hidden = edata
+        #     return hidden # zero tensors
         if self.rnn_type == 'gru':
             _, hidden = self.rnn(edata.permute(1, 0, 2))
         elif self.rnn_type == 'lstm':
@@ -132,7 +206,7 @@ class MAGNN_metapath_specific(nn.Module):
             final_r_vec[-1, :, 0] = 1
             for i in range(final_r_vec.shape[0] - 2, -1, -1):
                 # consider None edge (symmetric relation)
-                if self.etypes[i] is not None:
+                if self.etypes[i] is not None: # removed "self." in front of all "etypes"
                     final_r_vec[i, :, 0] = final_r_vec[i + 1, :, 0].clone() * r_vec[self.etypes[i], :, 0] -\
                                            final_r_vec[i + 1, :, 1].clone() * r_vec[self.etypes[i], :, 1]
                     final_r_vec[i, :, 1] = final_r_vec[i + 1, :, 0].clone() * r_vec[self.etypes[i], :, 1] +\
@@ -159,7 +233,8 @@ class MAGNN_metapath_specific(nn.Module):
             hidden = self.rnn(edata[:, 0])
             hidden = hidden.unsqueeze(dim=0)
 
-        eft = hidden.permute(1, 0, 2).view(-1, self.num_heads, self.out_dim)  # E x num_heads x out_dim
+        eft = hidden.permute(1, 0, 2).view(-1, self.num_heads, self.out_dim)  # E x num_heads x out_di
+        
         if self.attn_switch:
             center_node_feat = F.embedding(edge_metapath_indices[:, -1], features)  # E x out_dim
             a1 = self.attn1(center_node_feat)  # E x num_heads
@@ -174,14 +249,30 @@ class MAGNN_metapath_specific(nn.Module):
         # compute the aggregated node features scaled by the dropped,
         # unnormalized attention values.
         g.update_all(self.message_passing, fn.sum('ft', 'ft'))
-        ret = g.ndata['ft']  # E x num_heads x out_dim
+        new_nfeatures = g.ndata['ft'][target_node_idxs_local]  # E x num_heads x out_dim
 
+        # all nodes of current type = [5, 6]
+        # target_node_idxs = [6]
+        
+        fill_emb_idx = [nodes_of_current_target_type_idxs.index(i) for i in _target_node_idxs]
+        ret = F.embedding(torch.tensor(nodes_of_current_target_type_idxs, dtype=torch.int32, device='cuda:0'), features)
+        ret = torch.cat([ret] * self.num_heads, dim=1)
+        ret = ret.unsqueeze(dim=0)
+        ret = ret.permute(1, 0, 2).view(-1, self.num_heads, self.out_dim)
+        ret[fill_emb_idx] = new_nfeatures
+        
+        # Want to return embeddings of all nodes of current node type
+        # If all nodes of current type are [5, 6], but only [6] was involved in metapaths,
+        # still want to return a data for [5, 6], where 5 is simply the original node data
         if self.use_minibatch:
-            return ret[target_idx]
+            #idk what this should be (Ryan)
+            pass
         else:
             return ret
 
-
+"""
+Each instance of this class accepts all metapaths of a target node type
+"""
 class MAGNN_ctr_ntype_specific(nn.Module):
     def __init__(self,
                  num_metapaths,
@@ -225,20 +316,35 @@ class MAGNN_ctr_ntype_specific(nn.Module):
 
             # metapath-specific layers
             metapath_outs = [F.elu(metapath_layer((g, features, type_mask, edge_metapath_indices, target_idx)).view(-1, self.num_heads * self.out_dim))
-                             for g, edge_metapath_indices, target_idx, metapath_layer in zip(g_list, edge_metapath_indices_list, target_idx_list, self.metapath_layers)]
+                             for g, edge_metapath_indices, target_idx, metapath_layer, in zip(g_list, edge_metapath_indices_list, target_idx_list, self.metapath_layers)]
         else:
-            g_list, features, type_mask, edge_metapath_indices_list = inputs
+            g_list, features, type_mask, edge_metapath_indices_list, target_n_type = inputs
 
             # metapath-specific layers
-            metapath_outs = [F.elu(metapath_layer((g, features, type_mask, edge_metapath_indices)).view(-1, self.num_heads * self.out_dim))
+            # each of these layers correspond to a metapath type of same target node type
+            # e.g.: (0,2,0), (0,3,0), (2,0,0)
+            metapath_outs = [F.elu(metapath_layer((g, features, type_mask, edge_metapath_indices, target_n_type)).view(-1, self.num_heads * self.out_dim))
                              for g, edge_metapath_indices, metapath_layer in zip(g_list, edge_metapath_indices_list, self.metapath_layers)]
 
         beta = []
+        if len(metapath_outs) == 0:
+            nodes_of_current_target_type_idxs = np.where(type_mask == target_n_type)[0].tolist()
+            ret = F.embedding(torch.tensor(nodes_of_current_target_type_idxs, dtype=torch.int32, device='cuda:0'), features)
+            ret = torch.cat([ret] * self.num_heads, dim=1)
+            ret = ret.unsqueeze(dim=0)
+            ret = ret.permute(1, 0, 2).view(-1, self.num_heads, self.out_dim)
+            metapath_outs = [F.elu(ret).view(-1, self.num_heads * self.out_dim)]
+
         for metapath_out in metapath_outs:
             fc1 = torch.tanh(self.fc1(metapath_out))
             fc1_mean = torch.mean(fc1, dim=0)
             fc2 = self.fc2(fc1_mean)
             beta.append(fc2)
+
+        # print("beta:")
+        # print(beta)
+        # print(len(beta))
+
         beta = torch.cat(beta, dim=0)
         beta = F.softmax(beta, dim=0)
         beta = torch.unsqueeze(beta, dim=-1)

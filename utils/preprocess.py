@@ -31,13 +31,19 @@ def get_metapath_neighbor_pairs(M, type_mask, expected_metapaths):
         for i in range((len(metapath) - 1) // 2):
             temp = np.zeros(M.shape, dtype=bool)
             temp[np.ix_(type_mask == metapath[i], type_mask == metapath[i + 1])] = True
+            print("temp:")
+            print(temp)
+            print(temp.shape)
             temp[np.ix_(type_mask == metapath[i + 1], type_mask == metapath[i])] = True
             mask = np.logical_or(mask, temp)
+
         partial_g_nx = nx.from_numpy_matrix((M * mask).astype(int))
 
         # only need to consider the former half of the metapath
         # e.g., we only need to consider 0-1-2 for the metapath 0-1-2-1-0
         metapath_to_target = {}
+        print("type_mask == metapath[0]).nonzero()[0]:")
+        print((type_mask == metapath[0]).nonzero()[0])
         for source in (type_mask == metapath[0]).nonzero()[0]:
             for target in (type_mask == metapath[(len(metapath) - 1) // 2]).nonzero()[0]:
                 # check if there is a possible valid path from source to target node
@@ -60,6 +66,9 @@ def get_metapath_neighbor_pairs(M, type_mask, expected_metapaths):
                     metapath_neighbor_paris[(p1[0], p2[0])] = metapath_neighbor_paris.get((p1[0], p2[0]), []) + [
                         p1 + p2[-2::-1]]
         outs.append(metapath_neighbor_paris)
+    print("OUTS:")
+    print(outs)
+    raise Exception("Woops")
     return outs
 
 
@@ -78,7 +87,11 @@ def get_networkx_graph(neighbor_pairs, type_mask, ctr_ntype):
             for _ in range(len(paths)):
                 G.add_edge(idx_mapping[src], idx_mapping[dst])
                 edge_count += 1
+        print("G.edges")
+        print(G.edges)
         G_list.append(G)
+    print("G_list:")
+    print(G_list)
     return G_list
 
 
